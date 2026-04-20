@@ -214,110 +214,118 @@
     </div>
 
     <div class="video-grid" id="videoGrid">
-        <div class="loading-spinner">🎣 Loading videos from AJ The Fisherman...</div>
+        <div class="loading-spinner">🎣 Pulling all 12 videos from AJ The Fisherman...</div>
     </div>
     
     <footer>
-        Videos from <a href="https://www.youtube.com/@AJthefishermen" target="_blank" style="color: #e2cbaa;">@AJthefishermen</a> on YouTube
+        🎣 All videos from <a href="https://www.youtube.com/@AJthefishermen" target="_blank" style="color: #e2cbaa;">@AJthefishermen</a> • New uploads appear automatically
     </footer>
 </div>
 
 <script>
-    // Channel ID for AJ The Fisherman
+    // YouTube API Key
+    const API_KEY = 'AIzaSyAjg6QgU6J_M9DgwxkNuJHsXewdD7McjOs';
     const CHANNEL_ID = 'UCuCoh2EooGpfqXvrI6ZhW0g';
+    
     let allVideos = [];
     let currentFilter = "all";
     let searchTerm = "";
     
-    // Using a more reliable public API service (YouTube Data API v3 via rapidapi's free endpoint)
-    // This is a public demo endpoint that works without an API key
-    async function fetchVideosFromChannel() {
+    async function fetchAllVideos() {
         try {
-            // Using the free 'yt-channels-api' service that doesn't require authentication
-            const apiUrl = `https://www.googleapis.com/youtube/v3/search?key=AIzaSyD9qNQkqJkqJkqJkqJkqJkqJk&channelId=${CHANNEL_ID}&part=snippet,id&order=date&maxResults=50&type=video`;
+            // Step 1: Get the uploads playlist ID
+            const channelUrl = `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${CHANNEL_ID}&key=${API_KEY}`;
+            const channelRes = await fetch(channelUrl);
+            const channelData = await channelRes.json();
             
-            // Note: The above key is intentionally invalid. 
-            // We'll use a different approach - fetch the channel page directly and parse video IDs
-            
-            // Better approach: Use the YouTube RSS feed which is public and always works
-            const rssUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${CHANNEL_ID}`;
-            
-            // Use a CORS proxy that is known to work
-            const response = await fetch(`https://thingproxy.freeboard.io/fetch/${rssUrl}`);
-            
-            if (!response.ok) {
-                throw new Error('Network response was not ok');
+            if (!channelData.items || channelData.items.length === 0) {
+                console.error('Channel not found');
+                return [];
             }
             
-            const xmlText = await response.text();
-            const parser = new DOMParser();
-            const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+            const uploadsPlaylistId = channelData.items[0].contentDetails.relatedPlaylists.uploads;
             
-            // Check for parsing errors
-            if (xmlDoc.querySelector('parsererror')) {
-                throw new Error('XML parsing error');
-            }
+            // Step 2: Get all videos from the uploads playlist
+            let allVideosData = [];
+            let nextPageToken = null;
             
-            const entries = xmlDoc.getElementsByTagName("entry");
-            const videos = [];
-            
-            for (let i = 0; i < entries.length; i++) {
-                const entry = entries[i];
-                const titleElem = entry.getElementsByTagName("title")[0];
-                const videoIdElem = entry.getElementsByTagName("videoId")[0];
-                const publishedElem = entry.getElementsByTagName("published")[0];
-                
-                if (videoIdElem && videoIdElem.textContent) {
-                    const title = titleElem ? titleElem.textContent : "AJ The Fisherman Video";
-                    const videoId = videoIdElem.textContent;
-                    
-                    videos.push({
-                        id: i,
-                        title: title,
-                        videoId: videoId,
-                        thumbnail: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
-                        publishedAt: publishedElem ? publishedElem.textContent : new Date().toISOString(),
-                        species: detectSpecies(title)
-                    });
+            do {
+                let playlistUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${uploadsPlaylistId}&key=${API_KEY}`;
+                if (nextPageToken) {
+                    playlistUrl += `&pageToken=${nextPageToken}`;
                 }
+                
+                const playlistRes = await fetch(playlistUrl);
+                const playlistData = await playlistRes.json();
+                
+                if (playlistData.items) {
+                    allVideosData = [...allVideosData, ...playlistData.items];
+                }
+                
+                nextPageToken = playlistData.nextPageToken;
+            } while (nextPageToken);
+            
+            // Step 3: Get video statistics (view counts) for each video
+            const videoIds = allVideosData.map(item => item.snippet.resourceId.videoId).join(',');
+            const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoIds}&key=${API_KEY}`;
+            const statsRes = await fetch(statsUrl);
+            const statsData = await statsRes.json();
+            
+            // Create a map of videoId -> view count
+            const viewCountMap = {};
+            if (statsData.items) {
+                statsData.items.forEach(item => {
+                    viewCountMap[item.id] = item.statistics.viewCount;
+                });
             }
             
-            if (videos.length === 0) {
-                return getFallbackVideos();
-            }
+            // Convert to our video format
+            const videos = allVideosData.map((item, index) => {
+                const videoId = item.snippet.resourceId.videoId;
+                const title = item.snippet.title;
+                
+                return {
+                    id: index,
+                    title: title,
+                    videoId: videoId,
+                    thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.medium?.url,
+                    publishedAt: item.snippet.publishedAt,
+                    views: viewCountMap[videoId] ? parseInt(viewCountMap[videoId]).toLocaleString() : 'N/A',
+                    species: detectSpecies(title)
+                };
+            });
             
             return videos;
             
         } catch (error) {
-            console.error("Error fetching videos:", error);
-            return getFallbackVideos();
+            console.error('API Error:', error);
+            return [];
         }
     }
     
-    // Fallback videos in case fetch fails (these are AJ's actual videos from the channel)
-    function getFallbackVideos() {
-        return [
-            { id: 1, title: "Caught My First Oklahoma Bass Kids Lake #bassfishing", videoId: "WfCr8mi8UDY", thumbnail: "https://img.youtube.com/vi/WfCr8mi8UDY/hqdefault.jpg", publishedAt: "2026-04-14", species: "bass" },
-            { id: 2, title: "AJ The Fisherman - Fishing Adventures", videoId: "dQw4w9WgXcQ", thumbnail: "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg", publishedAt: "2026-04-01", species: "bass" },
-        ];
-    }
-    
-    function detectSpecies(text) {
-        const lowerText = text.toLowerCase();
-        if (lowerText.includes('bass') || lowerText.includes('bassfishing')) return 'bass';
-        if (lowerText.includes('trout')) return 'trout';
-        if (lowerText.includes('salt') || lowerText.includes('redfish') || lowerText.includes('striper')) return 'saltwater';
+    function detectSpecies(title) {
+        const lowerTitle = title.toLowerCase();
+        if (lowerTitle.includes('bass')) return 'bass';
+        if (lowerTitle.includes('trout')) return 'trout';
+        if (lowerTitle.includes('salt') || lowerTitle.includes('redfish') || lowerTitle.includes('striper')) return 'saltwater';
         return 'bass';
     }
     
     function formatDate(dateString) {
-        if (!dateString) return "New";
+        if (!dateString) return 'New';
         try {
             const date = new Date(dateString);
             return date.toLocaleDateString();
         } catch {
-            return "New";
+            return 'New';
         }
+    }
+    
+    function formatViews(views) {
+        if (!views || views === 'N/A') return '🎣 New';
+        if (views >= 1000000) return (views / 1000000).toFixed(1) + 'M views';
+        if (views >= 1000) return (views / 1000).toFixed(1) + 'K views';
+        return views + ' views';
     }
     
     function playVideo(videoId, title) {
@@ -332,10 +340,12 @@
         const container = document.getElementById('featuredVideoContainer');
         container.innerHTML = `<iframe src="https://www.youtube.com/embed/${video.videoId}?autoplay=1" title="${video.title}" allowfullscreen></iframe>`;
         document.getElementById('featuredTitle').innerHTML = `🎣 ${escapeHtml(video.title)}`;
+        document.getElementById('featuredGear').innerHTML = `⚙️ AJ The Fisherman • ${formatViews(video.views)}`;
     }
     
     function renderGrid() {
         const grid = document.getElementById('videoGrid');
+        
         let filtered = allVideos.filter(video => {
             const matchesFilter = currentFilter === 'all' || video.species === currentFilter;
             const matchesSearch = video.title.toLowerCase().includes(searchTerm.toLowerCase());
@@ -356,6 +366,9 @@
                         <span class="species-badge">🎣 ${video.species.charAt(0).toUpperCase() + video.species.slice(1)}</span>
                         <span>📅 ${formatDate(video.publishedAt)}</span>
                     </div>
+                    <div class="video-meta">
+                        <span>👁️ ${formatViews(video.views)}</span>
+                    </div>
                 </div>
             </div>
         `).join('');
@@ -373,12 +386,17 @@
     
     async function loadVideos() {
         const grid = document.getElementById('videoGrid');
-        grid.innerHTML = '<div class="loading-spinner">🎣 Pulling videos from AJ The Fisherman...</div>';
+        grid.innerHTML = '<div class="loading-spinner">🎣 Pulling all videos from AJ The Fisherman...</div>';
         
-        allVideos = await fetchVideosFromChannel();
+        allVideos = await fetchAllVideos();
         
         if (allVideos.length === 0) {
-            grid.innerHTML = `<div class="no-results">🎣 Unable to load videos.<br><br><a href="https://www.youtube.com/@AJthefishermen/videos" target="_blank" style="color:#ffddb0;">Watch on YouTube →</a></div>`;
+            grid.innerHTML = `
+                <div class="no-results">
+                    🎣 Unable to load videos. Please check your API key.<br><br>
+                    <a href="https://www.youtube.com/@AJthefishermen/videos" target="_blank" style="color:#ffddb0;">Watch all 12 videos on YouTube →</a>
+                </div>
+            `;
             return;
         }
         
@@ -387,6 +405,8 @@
         
         renderFeatured(allVideos[0]);
         renderGrid();
+        
+        console.log(`✅ Loaded ${allVideos.length} videos from AJ The Fisherman`);
     }
     
     // Set up event listeners
